@@ -3,13 +3,10 @@
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _, LedgerInfo},
-    Address, Env,
+    Address, BytesN, Env,
 };
 
-fn create_client<'a>(env: &'a Env) -> ArenaContractClient<'a> {
-    let contract_id = env.register(ArenaContract, ());
-    ArenaContractClient::new(env, &contract_id)
-}
+// ── Ledger helpers ────────────────────────────────────────────────────────────
 
 fn set_ledger_sequence(env: &Env, sequence_number: u32) {
     let mut ledger = env.ledger().get();
@@ -25,6 +22,38 @@ fn set_ledger_sequence(env: &Env, sequence_number: u32) {
         max_entry_ttl: ledger.max_entry_ttl,
     });
 }
+
+// ── Round state machine helpers ───────────────────────────────────────────────
+
+fn create_client<'a>(env: &'a Env) -> ArenaContractClient<'a> {
+    let contract_id = env.register(ArenaContract, ());
+    ArenaContractClient::new(env, &contract_id)
+}
+
+// ── Upgrade helpers ───────────────────────────────────────────────────────────
+
+const TIMELOCK: u64 = 48 * 60 * 60; // 48 hours
+
+fn setup_with_admin() -> (Env, Address, ArenaContractClient<'static>) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ArenaContract, ());
+    let client = ArenaContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // SAFETY: env lives for the duration of the test.
+    let env_static: &'static Env = unsafe { &*(&env as *const Env) };
+    let client = ArenaContractClient::new(env_static, &contract_id);
+    (env, admin, client)
+}
+
+fn dummy_hash(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[1u8; 32])
+}
+
+// ── Round state machine tests (from main) ────────────────────────────────────
 
 #[test]
 fn start_round_records_start_and_deadline_ledgers() {
@@ -150,4 +179,128 @@ fn data_model_doc_covers_required_sections() {
     assert!(doc.contains("## Access Pattern Matrix"));
     assert!(doc.contains("## ER-Style State Diagram"));
     assert!(doc.contains("No custom Soroban storage keys are currently defined or used."));
+}
+
+// ── Upgrade mechanism tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_initialize_sets_admin() {
+    let (_env, admin, client) = setup_with_admin();
+    assert_eq!(client.admin(), admin);
+}
+
+#[test]
+#[should_panic(expected = "already initialized")]
+fn test_double_initialize_panics() {
+    let (_env, admin, client) = setup_with_admin();
+    client.initialize(&admin);
+}
+
+#[test]
+fn test_propose_upgrade_stores_pending() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash);
+    assert!(pending.1 >= env.ledger().timestamp() + TIMELOCK);
+}
+
+#[test]
+fn test_propose_upgrade_replaces_previous() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    client.propose_upgrade(&hash2);
+
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash2);
+}
+
+#[test]
+#[should_panic(expected = "no pending upgrade")]
+fn test_execute_without_proposal_panics() {
+    let (_env, _admin, client) = setup_with_admin();
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "timelock has not expired")]
+fn test_execute_before_timelock_panics() {
+    let (env, _admin, client) = setup_with_admin();
+    client.propose_upgrade(&dummy_hash(&env));
+    // Advance only 47 h — one hour short of the 48-h timelock.
+    env.ledger().with_mut(|l| {
+        l.timestamp += 47 * 60 * 60;
+    });
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "timelock has not expired")]
+fn test_execute_exactly_at_boundary_panics() {
+    let (env, _admin, client) = setup_with_admin();
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&dummy_hash(&env));
+    // Advance to exactly the proposal time + TIMELOCK – 1 second.
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK - 1;
+    });
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "no pending upgrade to cancel")]
+fn test_cancel_without_proposal_panics() {
+    let (_env, _admin, client) = setup_with_admin();
+    client.cancel_upgrade();
+}
+
+#[test]
+fn test_cancel_clears_pending_upgrade() {
+    let (env, _admin, client) = setup_with_admin();
+    client.propose_upgrade(&dummy_hash(&env));
+    assert!(client.pending_upgrade().is_some());
+
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
+}
+
+#[test]
+#[should_panic(expected = "no pending upgrade")]
+fn test_execute_after_cancel_panics() {
+    let (env, _admin, client) = setup_with_admin();
+    client.propose_upgrade(&dummy_hash(&env));
+    client.cancel_upgrade();
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK + 1;
+    });
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "no pending upgrade to cancel")]
+fn test_double_cancel_panics() {
+    let (env, _admin, client) = setup_with_admin();
+    client.propose_upgrade(&dummy_hash(&env));
+    client.cancel_upgrade();
+    client.cancel_upgrade();
+}
+
+#[test]
+fn test_pending_upgrade_none_before_propose() {
+    let (_env, _admin, client) = setup_with_admin();
+    assert!(client.pending_upgrade().is_none());
+}
+
+#[test]
+fn test_pending_upgrade_none_after_cancel() {
+    let (env, _admin, client) = setup_with_admin();
+    client.propose_upgrade(&dummy_hash(&env));
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
 }
