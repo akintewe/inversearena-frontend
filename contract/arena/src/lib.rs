@@ -489,6 +489,22 @@ impl ArenaContract {
 
     // ── Upgrade mechanism ────────────────────────────────────────────────────
 
+    // ── Emergency Pause Policy ───────────────────────────────────────────────
+    //
+    // Governance/upgrade functions (`propose_upgrade`, `execute_upgrade`,
+    // `cancel_upgrade`) are EXEMPT from the global pause check.
+    //
+    // Rationale: A global pause is an emergency safety measure. If it also
+    // blocked upgrade/recovery functions, a paused contract could become
+    // permanently locked with no way out. Admin must always be able to propose,
+    // execute, or cancel an upgrade — even while the contract is paused — so
+    // that recovery or corrective upgrades remain possible.
+    //
+    // All other state-mutating functions (`start_round`, `submit_choice`,
+    // `timeout_round`, `join`, `claim`) continue to require the contract to be
+    // unpaused before proceeding.
+    // ────────────────────────────────────────────────────────────────────────
+
     /// Propose a WASM upgrade. The new hash is stored together with the
     /// earliest timestamp at which `execute_upgrade` may be called (now + 48 h).
     ///
@@ -502,10 +518,15 @@ impl ArenaContract {
     /// # Authorization
     /// Requires admin signature (`admin.require_auth()`).
     ///
+    /// # Pause Policy
+    /// **Exempt from pause.** This function may be called by the admin even when
+    /// the contract is paused, allowing upgrade proposals during an emergency.
+    ///
     /// # Events
     /// Emits `UpgradeProposed(new_wasm_hash, execute_after)`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        require_not_paused(&env).unwrap();
+        // NOTE: pause check intentionally omitted — governance functions are
+        // exempt so that admin can always initiate a recovery upgrade.
         let admin: Address = env
             .storage()
             .instance()
@@ -538,10 +559,14 @@ impl ArenaContract {
     /// # Authorization
     /// Requires admin signature (`admin.require_auth()`).
     ///
+    /// # Pause Policy
+    /// **Exempt from pause.** This function may be called by the admin even when
+    /// the contract is paused, enabling deployment of a recovery upgrade.
+    ///
     /// # Events
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
     pub fn execute_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
+        // NOTE: pause check intentionally omitted — see Emergency Pause Policy.
         let admin: Address = env
             .storage()
             .instance()
@@ -587,10 +612,15 @@ impl ArenaContract {
     /// # Authorization
     /// Requires admin signature (`admin.require_auth()`).
     ///
+    /// # Pause Policy
+    /// **Exempt from pause.** This function may be called by the admin even when
+    /// the contract is paused, allowing cancellation of an incorrect proposal
+    /// before executing a correct recovery upgrade.
+    ///
     /// # Events
     /// Emits `UpgradeCancelled`.
     pub fn cancel_upgrade(env: Env) {
-        require_not_paused(&env).unwrap();
+        // NOTE: pause check intentionally omitted — see Emergency Pause Policy.
         let admin: Address = env
             .storage()
             .instance()

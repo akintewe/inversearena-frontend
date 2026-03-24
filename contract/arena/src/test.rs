@@ -1232,7 +1232,7 @@ fn test_functions_fail_when_paused() {
 #[test]
 fn test_unpause_restores_functionality() {
     let (env, _admin, client) = setup_with_admin();
-    
+
     client.init(&10);
     client.pause();
     client.unpause();
@@ -1240,4 +1240,176 @@ fn test_unpause_restores_functionality() {
     // Should succeed now
     let round = client.start_round();
     assert_eq!(round.round_number, 1);
+}
+
+// ── Issue #271: Emergency Pause Policy — governance/upgrade exemption ──────────
+//
+// Policy: propose_upgrade, execute_upgrade, and cancel_upgrade must be callable
+// by ADMIN even when the contract is paused, so that a recovery upgrade can
+// always be initiated without first unpausing.
+
+/// When paused, propose_upgrade still succeeds for the admin.
+#[test]
+fn test_propose_upgrade_succeeds_when_paused() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+
+    client.pause();
+    assert!(client.is_paused(), "contract must be paused for this test");
+
+    // Must NOT panic or return Paused error — governance is exempt.
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade();
+    assert!(pending.is_some(), "proposal must be stored even when contract is paused");
+    assert_eq!(pending.unwrap().0, hash);
+}
+
+/// When paused, cancel_upgrade still succeeds for the admin.
+#[test]
+fn test_cancel_upgrade_succeeds_when_paused() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+
+    // Propose first, then pause.
+    client.propose_upgrade(&hash);
+    client.pause();
+    assert!(client.is_paused());
+
+    // Cancel must succeed even while paused.
+    client.cancel_upgrade();
+
+    assert!(
+        client.pending_upgrade().is_none(),
+        "proposal must be cleared even when contract is paused"
+    );
+}
+
+/// When paused, cancel_upgrade can be called after a proposal made while paused.
+#[test]
+fn test_cancel_upgrade_after_paused_propose() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    // Propose while paused — must succeed.
+    client.propose_upgrade(&hash);
+    assert!(client.pending_upgrade().is_some());
+
+    // Cancel while still paused — must also succeed.
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
+}
+
+/// When paused, normal game functions are blocked but governance functions are not.
+/// This is the core invariant of the Emergency Pause Policy.
+#[test]
+fn test_paused_blocks_game_functions_not_governance() {
+    let (env, _admin, client) = setup_with_admin();
+    let player = Address::generate(&env);
+    let hash = dummy_hash(&env);
+
+    client.init(&10);
+    client.pause();
+    assert!(client.is_paused());
+
+    // Game functions MUST be blocked when paused.
+    assert_eq!(
+        client.try_start_round(),
+        Err(Ok(ArenaError::Paused)),
+        "start_round must fail when paused"
+    );
+    assert_eq!(
+        client.try_timeout_round(),
+        Err(Ok(ArenaError::Paused)),
+        "timeout_round must fail when paused"
+    );
+    assert_eq!(
+        client.try_submit_choice(&player, &Choice::Heads),
+        Err(Ok(ArenaError::Paused)),
+        "submit_choice must fail when paused"
+    );
+
+    // Governance functions MUST succeed even when paused.
+    client.propose_upgrade(&hash);
+    assert!(
+        client.pending_upgrade().is_some(),
+        "propose_upgrade must succeed when paused"
+    );
+
+    client.cancel_upgrade();
+    assert!(
+        client.pending_upgrade().is_none(),
+        "cancel_upgrade must succeed when paused"
+    );
+}
+
+/// After unpausing, all functions — game and governance — work normally.
+#[test]
+fn test_all_functions_work_after_unpause() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+
+    client.init(&10);
+    client.pause();
+    client.unpause();
+    assert!(!client.is_paused());
+
+    // Game functions must work again.
+    let round = client.start_round();
+    assert_eq!(round.round_number, 1);
+    assert!(round.active);
+
+    // Governance functions must also still work unpaused.
+    client.propose_upgrade(&hash);
+    assert!(client.pending_upgrade().is_some());
+
+    client.cancel_upgrade();
+    assert!(client.pending_upgrade().is_none());
+}
+
+/// Propose while paused, then unpause and verify the proposal persists so
+/// execute_upgrade can be called after the timelock elapses.
+#[test]
+fn test_paused_proposal_persists_after_unpause() {
+    let (env, _admin, client) = setup_with_admin();
+    let hash = dummy_hash(&env);
+
+    client.pause();
+    client.propose_upgrade(&hash);
+
+    let pending_paused = client.pending_upgrade().expect("proposal must exist while paused");
+    assert_eq!(pending_paused.0, hash);
+
+    // Unpause — proposal must survive.
+    client.unpause();
+    assert!(!client.is_paused());
+
+    let pending_unpaused = client.pending_upgrade().expect("proposal must persist after unpause");
+    assert_eq!(pending_unpaused.0, hash);
+    assert_eq!(pending_paused.1, pending_unpaused.1, "execute_after timestamp must be unchanged");
+}
+
+/// is_paused() view function reflects pause/unpause state transitions correctly.
+#[test]
+fn test_is_paused_reflects_state_transitions() {
+    let (_env, _admin, client) = setup_with_admin();
+
+    assert!(!client.is_paused(), "contract starts unpaused");
+
+    client.pause();
+    assert!(client.is_paused(), "must be paused after pause()");
+
+    client.unpause();
+    assert!(!client.is_paused(), "must be unpaused after unpause()");
+
+    // Toggle multiple times — state must always match the last call.
+    client.pause();
+    client.pause(); // idempotent
+    assert!(client.is_paused());
+
+    client.unpause();
+    assert!(!client.is_paused());
 }
