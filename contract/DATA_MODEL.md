@@ -90,6 +90,9 @@ No custom Soroban storage keys are currently defined or used.
 | `propose_upgrade` ¹ | `ADMIN` (instance) | `P_HASH`, `P_AFTER` (instance) | — |
 | `execute_upgrade` ¹ | `ADMIN`, `P_AFTER`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
 | `cancel_upgrade` ¹ | `ADMIN`, `P_HASH` (instance) | removes `P_HASH`, `P_AFTER` (instance) | — |
+| `join` | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)`, `S_COUNT` (instance) | `Survivor(player)` |
+| `set_capacity` | `ADMIN` (instance) | `CAPACITY` (instance) | — |
+| `get_arena_state` | `S_COUNT`, `CAPACITY` (instance), `Round` | — | — |
 
 ¹ Exempt from the global pause check — see [Emergency Pause Policy](#emergency-pause-policy) below.
 
