@@ -88,6 +88,18 @@ pub struct ArenaContract;
 impl ArenaContract {
     // ── Initialisation ───────────────────────────────────────────────────────
 
+    /// Initialise the arena contract. Must be called exactly once after deployment.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `round_speed_in_ledgers` - Number of ledgers each round lasts. Must be > 0.
+    ///
+    /// # Errors
+    /// * [`ArenaError::AlreadyInitialized`] — Contract has already been initialised.
+    /// * [`ArenaError::InvalidRoundSpeed`] — `round_speed_in_ledgers` is zero.
+    ///
+    /// # Authorization
+    /// None — permissionless; caller is responsible for calling immediately after deploy.
     pub fn init(env: Env, round_speed_in_ledgers: u32) -> Result<(), ArenaError> {
         if storage(&env).has(&DataKey::Config) {
             return Err(ArenaError::AlreadyInitialized);
@@ -129,6 +141,16 @@ impl ArenaContract {
 
     /// Set the admin address. Must be called once after deployment before any
     /// upgrade functions can be used.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `admin` - Address to designate as the contract administrator.
+    ///
+    /// # Errors
+    /// Panics with `"already initialized"` if an admin has already been set.
+    ///
+    /// # Authorization
+    /// None — permissionless; must be called immediately after deploy.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
@@ -137,6 +159,15 @@ impl ArenaContract {
     }
 
     /// Return the current admin address.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// Panics with `"not initialized"` if `initialize` has not been called.
+    ///
+    /// # Authorization
+    /// None — read-only, open to any caller.
     pub fn admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -170,6 +201,21 @@ impl ArenaContract {
 
     // ── Round state machine ──────────────────────────────────────────────────
 
+    /// Start a new round. Increments the round counter and opens the submission window.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
+    /// * [`ArenaError::RoundAlreadyActive`] — A round is currently in progress.
+    /// * [`ArenaError::RoundDeadlineOverflow`] — Ledger sequence + round speed overflows `u32`.
+    ///
+    /// # Authorization
+    /// None — any caller may start a round once the previous one has ended.
+    ///
+    /// # Events
+    /// None emitted directly; callers should observe the returned [`RoundState`].
     pub fn start_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
         env.storage()
@@ -203,6 +249,21 @@ impl ArenaContract {
         Ok(next_round)
     }
 
+    /// Submit a player's choice for the active round.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `player` - Address of the player submitting a choice.
+    /// * `choice` - [`Choice::Heads`] or [`Choice::Tails`].
+    ///
+    /// # Errors
+    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
+    /// * [`ArenaError::NoActiveRound`] — No round is currently active.
+    /// * [`ArenaError::SubmissionWindowClosed`] — Current ledger is past the round deadline.
+    /// * [`ArenaError::SubmissionAlreadyExists`] — `player` already submitted in this round.
+    ///
+    /// # Authorization
+    /// Requires `player.require_auth()` — the transaction must be signed by `player`.
     pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
         require_not_paused(&env)?;
         env.storage()
@@ -235,6 +296,18 @@ impl ArenaContract {
         Ok(())
     }
 
+    /// Mark the active round as timed-out once its deadline has passed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * [`ArenaError::NotInitialized`] — Contract not initialised.
+    /// * [`ArenaError::NoActiveRound`] — No round is currently active.
+    /// * [`ArenaError::RoundStillOpen`] — The round deadline has not yet been reached.
+    ///
+    /// # Authorization
+    /// None — any caller may trigger a timeout once the deadline has passed.
     pub fn timeout_round(env: Env) -> Result<RoundState, ArenaError> {
         require_not_paused(&env)?;
         env.storage()
@@ -259,14 +332,43 @@ impl ArenaContract {
         Ok(round)
     }
 
+    /// Return the current [`ArenaConfig`].
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
+    ///
+    /// # Authorization
+    /// None — read-only, open to any caller.
     pub fn get_config(env: Env) -> Result<ArenaConfig, ArenaError> {
         get_config(&env)
     }
 
+    /// Return the current [`RoundState`].
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// * [`ArenaError::NotInitialized`] — `initialize` has not been called.
+    ///
+    /// # Authorization
+    /// None — read-only, open to any caller.
     pub fn get_round(env: Env) -> Result<RoundState, ArenaError> {
         get_round(&env)
     }
 
+    /// Return the choice a player submitted for a given round, or `None` if they did not submit.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `round_number` - The round to query.
+    /// * `player` - Address of the player to look up.
+    ///
+    /// # Authorization
+    /// None — read-only, open to any caller.
     pub fn get_choice(env: Env, round_number: u32, player: Address) -> Option<Choice> {
         storage(&env).get(&DataKey::Submission(round_number, player))
     }
@@ -275,6 +377,18 @@ impl ArenaContract {
 
     /// Propose a WASM upgrade. The new hash is stored together with the
     /// earliest timestamp at which `execute_upgrade` may be called (now + 48 h).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `new_wasm_hash` - 32-byte hash of the new contract WASM to deploy.
+    ///
+    /// # Errors
+    /// Panics with `"not initialized"` if the contract has not been initialized.
+    ///
+    /// # Authorization
+    /// Requires admin signature (`admin.require_auth()`).
+    ///
+    /// # Events
     /// Emits `UpgradeProposed(new_wasm_hash, execute_after)`.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         require_not_paused(&env).unwrap();
@@ -300,7 +414,19 @@ impl ArenaContract {
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
-    /// Panics if there is no pending proposal or the timelock has not elapsed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// Panics with `"not initialized"` if admin is not set.
+    /// Panics with `"no pending upgrade"` if no proposal exists.
+    /// Panics with `"timelock has not expired"` if called before the timelock elapses.
+    ///
+    /// # Authorization
+    /// Requires admin signature (`admin.require_auth()`).
+    ///
+    /// # Events
     /// Emits `UpgradeExecuted(new_wasm_hash)`.
     pub fn execute_upgrade(env: Env) {
         require_not_paused(&env).unwrap();
@@ -340,7 +466,18 @@ impl ArenaContract {
     }
 
     /// Cancel a pending upgrade proposal. Admin-only.
-    /// Panics if there is no pending proposal.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Errors
+    /// Panics with `"not initialized"` if admin is not set.
+    /// Panics with `"no pending upgrade to cancel"` if no proposal exists.
+    ///
+    /// # Authorization
+    /// Requires admin signature (`admin.require_auth()`).
+    ///
+    /// # Events
     /// Emits `UpgradeCancelled`.
     pub fn cancel_upgrade(env: Env) {
         require_not_paused(&env).unwrap();
@@ -363,6 +500,12 @@ impl ArenaContract {
 
     /// Return the pending WASM hash and the earliest execution timestamp,
     /// or `None` if no upgrade has been proposed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Authorization
+    /// None — read-only, open to any caller.
     pub fn pending_upgrade(env: Env) -> Option<(BytesN<32>, u64)> {
         let hash: Option<BytesN<32>> = env.storage().instance().get(&PENDING_HASH_KEY);
         let after: Option<u64> = env.storage().instance().get(&EXECUTE_AFTER_KEY);

@@ -25,6 +25,17 @@ pub struct PayoutContract;
 
 #[contractimpl]
 impl PayoutContract {
+    /// Placeholder function — returns a fixed value for contract liveness checks.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    ///
+    /// # Authorization
+    /// None — open to any caller.
+    pub fn hello(env: Env) -> u32 {
+        789
+    }
+
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
