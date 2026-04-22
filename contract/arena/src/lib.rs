@@ -88,6 +88,7 @@ pub enum ArenaError {
     WinnerNotSet = 31,
     AlreadyCancelled = 32,
     InvalidMaxRounds = 33,
+    HashMismatch = 34,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -129,6 +130,9 @@ pub struct ArenaStateView {
     pub potential_payout: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserStateView {
     pub is_active: bool,
     pub has_won: bool,
 }
@@ -1117,7 +1121,7 @@ impl ArenaContract {
         Ok(())
     }
 
-    pub fn execute_upgrade(env: Env) -> Result<(), ArenaError> {
+    pub fn execute_upgrade(env: Env, expected_hash: BytesN<32>) -> Result<(), ArenaError> {
         let admin: Address = env
             .storage()
             .instance()
@@ -1132,18 +1136,21 @@ impl ArenaContract {
         if env.ledger().timestamp() < execute_after {
             return Err(ArenaError::TimelockNotExpired);
         }
-        let new_wasm_hash: BytesN<32> = env
+        let stored_hash: BytesN<32> = env
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
             .ok_or(ArenaError::NoPendingUpgrade)?;
+        if stored_hash != expected_hash {
+            return Err(ArenaError::HashMismatch);
+        }
         env.storage().instance().remove(&PENDING_HASH_KEY);
         env.storage().instance().remove(&EXECUTE_AFTER_KEY);
         env.events().publish(
             (TOPIC_UPGRADE_EXECUTED,),
-            (EVENT_VERSION, new_wasm_hash.clone()),
+            (EVENT_VERSION, stored_hash.clone()),
         );
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(stored_hash);
         Ok(())
     }
 
@@ -1171,21 +1178,6 @@ impl ArenaContract {
             (Some(h), Some(a)) => Some((h, a)),
             _ => None,
         }
-    }
-
-    pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&ADMIN_KEY)
-            .ok_or(ArenaError::NotInitialized)?;
-        admin.require_auth();
-
-        let current_state = get_state(&env);
-        assert_state!(current_state, ArenaState::Pending | ArenaState::Active);
-
-        set_state(&env, ArenaState::Cancelled);
-        Ok(())
     }
 
     pub fn state(env: Env) -> ArenaState {

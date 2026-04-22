@@ -48,6 +48,9 @@ fn arena_error_codes_match_abi_snapshot() {
         ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
         ("WinnerAlreadySet", ArenaError::WinnerAlreadySet),
         ("WinnerNotSet", ArenaError::WinnerNotSet),
+        ("AlreadyCancelled", ArenaError::AlreadyCancelled),
+        ("InvalidMaxRounds", ArenaError::InvalidMaxRounds),
+        ("HashMismatch", ArenaError::HashMismatch),
     ];
 
     assert_eq!(

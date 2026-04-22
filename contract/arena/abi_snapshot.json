@@ -32,7 +32,10 @@
     "TokenConfigurationLocked": 28,
     "UpgradeAlreadyPending": 29,
     "WinnerAlreadySet": 30,
-    "WinnerNotSet": 31
+    "WinnerNotSet": 31,
+    "AlreadyCancelled": 32,
+    "InvalidMaxRounds": 33,
+    "HashMismatch": 34
   },
   "event_topics": [
     "UP_PROP",
